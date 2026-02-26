@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 _BURST_WINDOW_HOURS = 72
 _BURST_MIN_COUNT = 5
-_MODEL = "claude-sonnet-4-5-20241022"
+_MODEL = "claude-sonnet-4-20250514"
 _MAX_RETRIES = 1
 
 

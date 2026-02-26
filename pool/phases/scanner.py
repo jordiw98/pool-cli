@@ -16,6 +16,13 @@ from typing import Optional
 
 import imagehash
 from PIL import Image, ExifTags
+
+# Register HEIC/HEIF support with Pillow
+try:
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+except ImportError:
+    pass
 from rich.progress import (
     Progress,
     SpinnerColumn,
@@ -124,7 +131,7 @@ def _scan_images(
             try:
                 _process_single_image(conn, path, thumb_dir)
             except Exception:
-                logger.warning("Skipping %s — failed to process", path, exc_info=True)
+                logger.warning("Skipping %s — failed to process", path)
             progress.advance(task)
 
 

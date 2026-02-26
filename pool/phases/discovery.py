@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-MODEL = "claude-sonnet-4-5-20241022"
+MODEL = "claude-sonnet-4-20250514"
 MAX_RETRIES = 3
 RETRY_BACKOFF_BASE = 2.0  # seconds; doubles each attempt
 

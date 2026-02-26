@@ -9,3 +9,4 @@ build/
 .pool_thumbnails/
 *.egg
 .DS_Store
+.env
