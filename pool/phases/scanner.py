@@ -233,8 +233,9 @@ def _generate_thumbnail(
 
         # Handle name collisions (different source subdirectories may share names).
         if thumb_path.exists():
-            # Append a hash of the full original path for uniqueness.
-            path_hash = format(hash(str(original_path)) & 0xFFFFFFFF, "08x")
+            # Append a deterministic hash of the full original path for uniqueness.
+            import hashlib
+            path_hash = hashlib.md5(str(original_path).encode()).hexdigest()[:8]
             thumb_name = f"{original_path.stem}_{path_hash}.jpg"
             thumb_path = thumb_dir / thumb_name
 

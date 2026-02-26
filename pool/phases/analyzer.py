@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 from pool import cache
+from pool.models import LoopStatus
 
 logger = logging.getLogger(__name__)
 
@@ -192,9 +193,6 @@ def _longest_gap(dates: list[datetime]) -> int:
 # ---------------------------------------------------------------------------
 # Step 2: Loop classification
 # ---------------------------------------------------------------------------
-
-from pool.models import LoopStatus  # noqa: E402 (keep grouped with usage)
-
 
 def _classify_loop(temporal: dict, dates: list[datetime]) -> LoopStatus:
     """Determine loop status from temporal signature and raw dates."""

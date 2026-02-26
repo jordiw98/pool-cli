@@ -208,6 +208,19 @@ Everything is cached in SQLite (`.pool_cache.db` inside the screenshots folder).
 | Cache | SQLite | Everything cached, re-run = instant |
 | CLI | Typer + Rich | Progress bars, styled terminal output |
 
+## Privacy
+
+Your screenshots stay as local as possible:
+
+- **Phases 1-2** (scan, embeddings, clustering) are fully local — nothing leaves your machine
+- **Phase 3** (pool discovery) sends resized thumbnails (512px) to Claude for naming
+- **Phase 4 Tier 1+2** (SigLIP + OCR) are fully local
+- **Phase 4 Tier 3** sends resized thumbnails to Gemini Flash for the ~10% of images that need a tiebreaker
+- **Phase 5** sends thumbnails to Claude for action generation
+- **`--no-api`** keeps everything 100% local ($0, no data sent anywhere)
+
+No original full-resolution images are ever sent to any API. Only 512px JPEG thumbnails are transmitted.
+
 ## Cost safety
 
 The tool never spends money without asking:

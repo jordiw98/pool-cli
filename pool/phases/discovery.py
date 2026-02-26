@@ -193,6 +193,11 @@ def _parse_date(date_str: Optional[str]) -> Optional[datetime]:
     """Parse an ISO-ish date string, returning None on failure."""
     if not date_str:
         return None
+    # Python 3.11+ handles timezone offsets natively; try fromisoformat first.
+    try:
+        return datetime.fromisoformat(date_str)
+    except (ValueError, TypeError):
+        pass
     for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
         try:
             return datetime.strptime(date_str, fmt)

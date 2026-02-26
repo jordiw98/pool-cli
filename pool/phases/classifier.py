@@ -18,6 +18,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
 
+import base64 as base64_module
+
 import numpy as np
 from rich.progress import (
     BarColumn,
@@ -171,6 +173,35 @@ def _run_ocr(filepath: str) -> str:
         return ""
 
 
+def _image_to_base64_for_gemini(filepath: str, max_dim: int = 512) -> tuple[str, str]:
+    """Read an image, resize to thumbnail, return (base64_data, mime_type).
+
+    Uses inline base64 instead of upload_file to avoid sending full-size
+    images to Google's servers and to reduce upload time.
+    """
+    from PIL import Image
+    import base64
+    import io
+
+    img = Image.open(filepath)
+    if img.mode == "RGBA":
+        bg = Image.new("RGB", img.size, (255, 255, 255))
+        bg.paste(img, mask=img.split()[3])
+        img = bg
+    elif img.mode != "RGB":
+        img = img.convert("RGB")
+
+    w, h = img.size
+    if max(w, h) > max_dim:
+        scale = max_dim / max(w, h)
+        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=80)
+    b64 = base64.standard_b64encode(buf.getvalue()).decode("ascii")
+    return b64, "image/jpeg"
+
+
 def _call_gemini_single(
     filepath: str,
     pools_info: list[dict],
@@ -181,8 +212,6 @@ def _call_gemini_single(
     Returns a dict with keys: pool_id, confidence, explanation.
     On failure returns an empty dict.
     """
-    import google.generativeai as genai
-
     pool_list_text = "\n".join(
         f'- id="{p["id"]}", name="{p["name"]}", description="{p["description"]}"'
         for p in pools_info
@@ -203,13 +232,13 @@ def _call_gemini_single(
         if not img_path.exists():
             return {}
 
-        uploaded = genai.upload_file(str(img_path))
+        b64_data, mime_type = _image_to_base64_for_gemini(str(img_path))
         response = model.generate_content(
-            [prompt, uploaded],
-            generation_config=genai.GenerationConfig(
-                temperature=0.1,
-                max_output_tokens=256,
-            ),
+            [
+                prompt,
+                {"mime_type": mime_type, "data": base64_module.b64decode(b64_data)},
+            ],
+            generation_config={"temperature": 0.1, "max_output_tokens": 256},
         )
 
         text = response.text.strip()
@@ -236,15 +265,19 @@ def _call_gemini_with_retry(
     filepath: str,
     pools_info: list[dict],
     model,
-    retries: int = 1,
+    retries: int = 2,
 ) -> dict:
-    """Call Gemini with a single retry on failure."""
+    """Call Gemini with retries and exponential backoff."""
+    import time as _time
+
     for attempt in range(1 + retries):
         result = _call_gemini_single(filepath, pools_info, model)
         if result:
             return result
         if attempt < retries:
-            logger.debug("Retrying Gemini for %s (attempt %d)", filepath, attempt + 2)
+            wait = 1.0 * (2 ** attempt)  # 1s, 2s, 4s
+            logger.debug("Retrying Gemini for %s (attempt %d, wait %.1fs)", filepath, attempt + 2, wait)
+            _time.sleep(wait)
     return {}
 
 
@@ -562,7 +595,7 @@ def classify(
 
     gemini_classified = 0
     gemini_noise = 0
-    max_workers = min(10, len(tier3_candidates))
+    max_workers = min(5, len(tier3_candidates))  # conservative to avoid rate limits
 
     with _make_progress() as progress:
         task = progress.add_task("Tier 3: Gemini Flash", total=len(tier3_candidates))
@@ -799,13 +832,13 @@ def _get_gemini_explanation(filepath: str, pools: list[dict]) -> str:
         if not img_path.exists():
             return ""
 
-        uploaded = genai.upload_file(str(img_path))
+        b64_data, mime_type = _image_to_base64_for_gemini(str(img_path))
         response = model.generate_content(
-            [prompt, uploaded],
-            generation_config=genai.GenerationConfig(
-                temperature=0.2,
-                max_output_tokens=128,
-            ),
+            [
+                prompt,
+                {"mime_type": mime_type, "data": base64_module.b64decode(b64_data)},
+            ],
+            generation_config={"temperature": 0.2, "max_output_tokens": 128},
         )
         return response.text.strip()
     except Exception:
