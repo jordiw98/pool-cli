@@ -231,22 +231,38 @@ def cluster(conn: sqlite3.Connection) -> None:
 
     filepaths = [fp for fp, _emb in all_embeddings]
     matrix = np.stack([emb for _fp, emb in all_embeddings])
+    n = len(filepaths)
 
-    logger.info("Clustering %d embeddings", len(filepaths))
+    if n < 30:
+        logger.warning("Too few images for clustering (%d) — skipping", n)
+        return
+
+    # Adaptive parameters based on dataset size
+    n_neighbors = min(30, max(10, n // 20))      # 10-30, scales with data
+    n_components = min(15, max(5, n // 50))       # 5-15, avoid over-reducing small sets
+    min_cluster_size = max(5, n // 200)           # at least 5, ~0.5% of dataset
+    min_samples = max(2, min_cluster_size // 3)   # ~1/3 of min_cluster_size
+
+    logger.info(
+        "UMAP/HDBSCAN params for n=%d: n_neighbors=%d, n_components=%d, min_cluster=%d, min_samples=%d",
+        n, n_neighbors, n_components, min_cluster_size, min_samples,
+    )
+
+    logger.info("Clustering %d embeddings", n)
 
     # Dimensionality reduction
     reducer = umap.UMAP(
-        n_components=15,
+        n_components=n_components,
         metric="cosine",
-        n_neighbors=30,
+        n_neighbors=n_neighbors,
         random_state=42,
     )
     reduced = reducer.fit_transform(matrix)
 
     # Clustering
     clusterer = hdbscan.HDBSCAN(
-        min_cluster_size=15,
-        min_samples=5,
+        min_cluster_size=min_cluster_size,
+        min_samples=min_samples,
     )
     labels = clusterer.fit_predict(reduced)
 

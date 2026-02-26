@@ -42,13 +42,19 @@ def _estimate_cost(unique_count: int, mode: PipelineMode) -> CostEstimate:
     if mode == PipelineMode.QUICK:
         return CostEstimate(anthropic_usd=1.0, google_usd=0.0)
     elif mode == PipelineMode.SMALL:
-        # All images to Claude for discovery, SigLIP + OCR for classification
-        anthropic = max(0.50, unique_count * 0.01)  # ~$0.01 per image for discovery
+        # 50 samples with thumbnails to Claude for discovery
+        anthropic = max(0.80, min(3.0, unique_count * 0.005))
         return CostEstimate(anthropic_usd=round(anthropic, 2), google_usd=0.0)
     else:
-        # Full mode
+        # Full mode — dynamic estimate based on image count
+        # Discovery: ~$0.01 per cluster rep image (~6 reps × ~20 clusters for 9K images)
+        discovery = min(3.0, unique_count * 0.00015)
+        # Actions: ~$0.002 per pool thumbnail (10 thumbnails × ~15 pools)
+        actions = min(2.0, unique_count * 0.00004)
+        # Opening insight: flat ~$0.05
+        anthropic = discovery + actions + 0.05
+
         gemini_images = int(unique_count * 0.12)  # ~12% go to tier 3
-        anthropic = 5.0  # discovery + actions/narratives
         google = max(0.50, gemini_images * 0.001)  # ~$0.001 per Gemini call
         return CostEstimate(anthropic_usd=round(anthropic, 2), google_usd=round(google, 2))
 
@@ -75,8 +81,17 @@ def analyze(
     cost_only: bool = typer.Option(False, "--cost", help="Estimate cost without running"),
     no_cache: bool = typer.Option(False, "--no-cache", help="Force full re-analysis"),
     no_api: bool = typer.Option(False, "--no-api", help="Fully local mode, no API calls"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed progress and debug info"),
 ) -> None:
     """Analyze screenshots and organize them into intelligent Pools."""
+    if verbose:
+        import logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(name)s: %(message)s",
+            stream=sys.stderr,
+        )
+
     from pool.phases import scanner, embeddings, discovery, classifier, analyzer, output
 
     source_dir = Path(path).expanduser().resolve()

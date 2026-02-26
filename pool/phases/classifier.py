@@ -455,11 +455,39 @@ def classify(
     tier3_candidates: list[tuple[str, float, str]] = []  # (filepath, best_conf, best_pool)
     tier2_classified = 0
 
+    # Step 1: Pre-compute OCR for all candidates in parallel.
+    # Apple Vision OCR is CPU-bound; 4 workers balances throughput
+    # against diminishing returns from context-switching overhead.
+    ocr_results: dict[str, str] = {}  # filepath -> ocr_text
+
     with _make_progress() as progress:
-        task = progress.add_task("Tier 2: OCR enrichment", total=len(tier2_candidates))
+        task = progress.add_task(
+            "Tier 2: OCR extraction", total=len(tier2_candidates),
+        )
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            future_to_filepath = {
+                executor.submit(_run_ocr, filepath): filepath
+                for filepath, _conf, _pool in tier2_candidates
+            }
+
+            for future in as_completed(future_to_filepath):
+                filepath = future_to_filepath[future]
+                try:
+                    ocr_results[filepath] = future.result()
+                except Exception:
+                    logger.debug("OCR future failed for %s", filepath, exc_info=True)
+                    ocr_results[filepath] = ""
+                progress.advance(task)
+
+    # Step 2: Score and classify sequentially using the pre-computed OCR text.
+    with _make_progress() as progress:
+        task = progress.add_task(
+            "Tier 2: OCR classification", total=len(tier2_candidates),
+        )
 
         for filepath, siglip_conf, siglip_pool in tier2_candidates:
-            ocr_text = _run_ocr(filepath)
+            ocr_text = ocr_results.get(filepath, "")
 
             if ocr_text:
                 scores = _score_ocr_for_pools(ocr_text, pool_keywords)

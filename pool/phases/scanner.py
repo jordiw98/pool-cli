@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 import imagehash
-from PIL import Image, ExifTags
+from PIL import Image
 
 # Register HEIC/HEIF support with Pillow
 try:
@@ -196,8 +196,6 @@ def _extract_created_at(img: Image.Image, stat: os.stat_result) -> str:
     try:
         exif_data = img.getexif()
         if exif_data:
-            # Build tag name lookup once (cheap, dict comprehension).
-            tag_map = {v: k for k, v in ExifTags.Base.__members__.items()}
             # DateTimeOriginal (36867) or DateTimeDigitized (36868)
             for tag_id in (36867, 36868):
                 val = exif_data.get(tag_id)

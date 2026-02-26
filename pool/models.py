@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from enum import Enum
-from pathlib import Path
-from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
+CLAUDE_MODEL = "claude-sonnet-4-20250514"
 
 # --- Enums ---
 
@@ -41,71 +40,6 @@ class ClassificationMethod(str, Enum):
     GEMINI = "gemini"           # Tier 3: Gemini Flash tiebreaker
     CLAUDE_DIRECT = "claude"    # Small/quick mode: Claude classified directly
     NOISE = "noise"             # Unresolvable
-
-
-# --- Image models ---
-
-class ImageMeta(BaseModel):
-    filepath: str
-    filename: str
-    file_size: int                          # bytes
-    width: int
-    height: int
-    created_at: Optional[str] = None        # ISO datetime
-    modified_at: Optional[str] = None       # ISO datetime
-    phash: Optional[str] = None             # perceptual hash hex string
-    is_duplicate: bool = False
-    duplicate_of: Optional[str] = None      # filepath of representative
-    thumbnail_path: Optional[str] = None
-
-
-class ImageEmbedding(BaseModel):
-    filepath: str
-    embedding: Optional[list[float]] = None  # 512D SigLIP vector (stored as blob in SQLite)
-    cluster_id: Optional[int] = None
-
-
-class ImageClassification(BaseModel):
-    filepath: str
-    pool_id: str
-    confidence: float = 0.0
-    method: ClassificationMethod = ClassificationMethod.NOISE
-    explanation: Optional[str] = None
-    ocr_text: Optional[str] = None
-
-
-# --- Pool models ---
-
-class Pool(BaseModel):
-    id: str
-    name: str
-    description: str
-    intent: IntentType = IntentType.UNKNOWN
-    siglip_description: Optional[str] = None    # optimized text for zero-shot
-    source_clusters: list[int] = Field(default_factory=list)
-    match_count: int = 0
-    top_matches: list[str] = Field(default_factory=list)   # filepaths
-    is_noise: bool = False
-
-
-class TemporalSignature(BaseModel):
-    pool_id: str
-    first_date: Optional[str] = None
-    last_date: Optional[str] = None
-    span_days: int = 0
-    total_count: int = 0
-    frequency_per_month: float = 0.0
-    burst_count: int = 0           # 5+ screenshots in 72hrs
-    longest_gap_days: int = 0
-    loop_status: LoopStatus = LoopStatus.UNKNOWN
-
-
-class PoolAction(BaseModel):
-    pool_id: str
-    action: Optional[str] = None       # None = deliberate no-action
-    why: Optional[str] = None          # one-liner explanation
-    notes: str = ""                    # temporal/behavioral observation
-    has_action: bool = False
 
 
 # --- Pipeline state ---
@@ -147,18 +81,3 @@ class CostEstimate(BaseModel):
 
     def display(self) -> str:
         return f"~${self.total_usd:.2f} (Anthropic ~${self.anthropic_usd:.2f} · Google ~${self.google_usd:.2f})"
-
-
-class PipelineState(BaseModel):
-    mode: PipelineMode = PipelineMode.FULL
-    source_dir: str = ""
-    total_images: int = 0
-    unique_images: int = 0
-    duplicates: int = 0
-    pools: list[Pool] = Field(default_factory=list)
-    classifications: list[ImageClassification] = Field(default_factory=list)
-    temporals: list[TemporalSignature] = Field(default_factory=list)
-    actions: list[PoolAction] = Field(default_factory=list)
-    breakdown: ClassificationBreakdown = Field(default_factory=ClassificationBreakdown)
-    cost: CostEstimate = Field(default_factory=CostEstimate)
-    opening_insight: str = ""

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 from pool import cache
-from pool.models import LoopStatus
+from pool.models import CLAUDE_MODEL, LoopStatus
 
 logger = logging.getLogger(__name__)
 
@@ -25,8 +25,18 @@ logger = logging.getLogger(__name__)
 
 _BURST_WINDOW_HOURS = 72
 _BURST_MIN_COUNT = 5
-_MODEL = "claude-sonnet-4-20250514"
+_MODEL = CLAUDE_MODEL
 _MAX_RETRIES = 1
+
+_anthropic_client = None
+
+
+def _get_anthropic_client():
+    global _anthropic_client
+    if _anthropic_client is None:
+        import anthropic
+        _anthropic_client = anthropic.Anthropic()
+    return _anthropic_client
 
 
 # ---------------------------------------------------------------------------
@@ -319,9 +329,7 @@ def _call_claude_for_actions(
     source_dir: str,
 ) -> None:
     """Batch all pools into one Claude call for action generation."""
-    import anthropic
-
-    client = anthropic.Anthropic()
+    client = _get_anthropic_client()
 
     # Build the user message with pool info and thumbnails.
     user_parts: list[dict] = []
@@ -497,9 +505,7 @@ def _generate_opening_insight(
         cache.set_state(conn, "opening_insight", "")
         return
 
-    import anthropic
-
-    client = anthropic.Anthropic()
+    client = _get_anthropic_client()
 
     summaries: list[str] = []
     for pool in pools:

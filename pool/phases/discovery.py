@@ -25,10 +25,9 @@ import numpy as np
 
 from pool import cache
 from pool.models import (
+    CLAUDE_MODEL,
     ClassificationMethod,
     IntentType,
-    Pool,
-    PoolAction,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,7 +36,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-MODEL = "claude-sonnet-4-20250514"
+MODEL = CLAUDE_MODEL
 MAX_RETRIES = 3
 RETRY_BACKOFF_BASE = 2.0  # seconds; doubles each attempt
 
@@ -250,14 +249,23 @@ def _sample_spread(items: list[dict], n: int) -> list[dict]:
 # Claude API call with retry
 # ---------------------------------------------------------------------------
 
+_anthropic_client = None
+
+
+def _get_anthropic_client():
+    global _anthropic_client
+    if _anthropic_client is None:
+        import anthropic
+        _anthropic_client = anthropic.Anthropic()
+    return _anthropic_client
+
+
 def _call_claude(system: str, user_content: list[dict], *, max_tokens: int = 4096) -> str:
     """Send a request to Claude and return the text response.
 
     Retries up to MAX_RETRIES times with exponential backoff on transient errors.
     """
-    import anthropic
-
-    client = anthropic.Anthropic()
+    client = _get_anthropic_client()
 
     last_error: Optional[Exception] = None
     for attempt in range(MAX_RETRIES):
