@@ -22,8 +22,8 @@ Phase 4: Claude pool discovery            ~1 min     ~$2
     Cluster representatives → Claude → human-named pools
 
 Phase 5: 3-tier classification cascade    ~4 min     ~$1
-    Tier 1: SigLIP zero-shot (instant, $0)     ~55% of images
-    Tier 2: Apple Vision OCR ($0)              ~24% of images
+    Tier 1: Centroid matching (instant, $0)    ~65% of images
+    Tier 2: Apple Vision OCR ($0)              ~20% of images
     Tier 3: Gemini 2.0 Flash tiebreaker        ~10% of images
     Unresolvable → catch-all pool              ~2% of images
 
@@ -34,7 +34,7 @@ TOTAL (9K images, first run)              ~15 min    ~$6
 TOTAL (cached re-run)                     <1 sec     $0
 ```
 
-The key insight: no single model handles screenshots well. The text ON a screenshot is often a stronger signal than the pixels. So SigLIP handles the visually obvious ones, OCR catches the text-heavy ones, and Gemini Flash resolves the rest. ~85% is classified locally for $0.
+The key insight: no single model handles screenshots well. Tier 1 classifies by nearest **pool centroid** in the SigLIP embedding space — same vector space end-to-end, no indirect text coupling. The text ON a screenshot is often a stronger signal than the pixels, so OCR catches what vision embeddings miss. Gemini Flash resolves the rest. ~85% is classified locally for $0.
 
 ## Setup
 
@@ -149,10 +149,10 @@ pool ~/path --no-cache               # Wipe cache, force full reprocessing
 
 ```
 Classification
-  SigLIP zero-shot (high confidence):  4,892  (55%)
-  SigLIP + OCR confirmed:             2,104  (24%)
+  SigLIP centroid match (high conf):   5,783  (65%)
+  SigLIP + OCR confirmed:             1,780  (20%)
   Gemini Flash tiebreaker:               847  (10%)
-  Unresolved → "Not Sure" pool:          157  ( 2%)
+  Unresolved → "Not Sure" pool:          125  ( 1%)
   Duplicates skipped:                    356
 
 "You care about music the way some people care about food — in bursts, deeply, then you move on."
@@ -199,7 +199,7 @@ Everything is cached in SQLite (`.pool_cache.db` inside the screenshots folder).
 
 | Layer | Tool | Role |
 |-------|------|------|
-| Image embeddings | SigLIP2 (ViT-B-16-512) via `open_clip` | Cluster discovery + Tier 1 classification |
+| Image embeddings | SigLIP2 (ViT-B-16-512) via `open_clip` | Cluster discovery + Tier 1 centroid matching |
 | Clustering | UMAP + HDBSCAN | Auto-discover natural groups |
 | OCR | Apple Vision via `ocrmac` | Tier 2 — text extraction for text-heavy screenshots |
 | Tiebreaker | Gemini 2.0 Flash | Tier 3 — low-confidence images |
