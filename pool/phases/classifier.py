@@ -18,6 +18,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
 
+import threading
+import time as time_module
+
 import base64 as base64_module
 
 import numpy as np
@@ -33,6 +36,28 @@ from pool import cache
 from pool.models import ClassificationMethod
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Rate limiter for external API calls
+# ---------------------------------------------------------------------------
+
+class _RateLimiter:
+    """Thread-safe token-bucket rate limiter."""
+
+    def __init__(self, max_per_minute: int = 14):
+        self._interval = 60.0 / max_per_minute
+        self._lock = threading.Lock()
+        self._last = 0.0
+
+    def acquire(self) -> None:
+        """Block until a request is allowed."""
+        with self._lock:
+            now = time_module.monotonic()
+            wait = self._last + self._interval - now
+            if wait > 0:
+                time_module.sleep(wait)
+            self._last = time_module.monotonic()
 
 # ---------------------------------------------------------------------------
 # Confidence thresholds
@@ -261,23 +286,25 @@ def _call_gemini_single(
         return {}
 
 
+_gemini_limiter = _RateLimiter(max_per_minute=14)  # Google free tier: 15 rpm, leave headroom
+
+
 def _call_gemini_with_retry(
     filepath: str,
     pools_info: list[dict],
     model,
     retries: int = 2,
 ) -> dict:
-    """Call Gemini with retries and exponential backoff."""
-    import time as _time
-
+    """Call Gemini with rate limiting, retries, and exponential backoff."""
     for attempt in range(1 + retries):
+        _gemini_limiter.acquire()
         result = _call_gemini_single(filepath, pools_info, model)
         if result:
             return result
         if attempt < retries:
             wait = 1.0 * (2 ** attempt)  # 1s, 2s, 4s
             logger.debug("Retrying Gemini for %s (attempt %d, wait %.1fs)", filepath, attempt + 2, wait)
-            _time.sleep(wait)
+            time_module.sleep(wait)
     return {}
 
 
@@ -290,6 +317,63 @@ def _make_progress() -> Progress:
         TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
         TimeRemainingColumn(),
     )
+
+
+# ---------------------------------------------------------------------------
+# Centroid-based classification (uses cluster embeddings directly)
+# ---------------------------------------------------------------------------
+
+
+def _compute_pool_centroids(
+    conn: sqlite3.Connection,
+    pools: list[dict],
+    all_embeddings: list[tuple[str, np.ndarray]],
+) -> dict[str, np.ndarray]:
+    """Compute L2-normalized centroid embeddings for each pool.
+
+    Uses the cluster→pool mapping from discovery to aggregate embeddings
+    of all images assigned to each pool's source clusters. Returns an empty
+    dict when cluster data is unavailable (e.g. small mode).
+    """
+    # Get cluster assignments from embeddings table
+    rows = conn.execute(
+        "SELECT filepath, cluster_id FROM embeddings WHERE cluster_id IS NOT NULL"
+    ).fetchall()
+    if not rows:
+        return {}
+
+    fp_to_cluster: dict[str, int] = {r[0]: r[1] for r in rows}
+    emb_lookup: dict[str, np.ndarray] = {fp: emb for fp, emb in all_embeddings}
+
+    # Map cluster IDs to pool IDs via source_clusters
+    centroids: dict[str, np.ndarray] = {}
+    for pool in pools:
+        if pool.get("is_noise"):
+            continue
+        source_clusters = pool.get("source_clusters", [])
+        if not source_clusters:
+            continue
+
+        source_set = set(int(c) for c in source_clusters)
+
+        # Collect all embeddings belonging to this pool's clusters
+        pool_embs: list[np.ndarray] = []
+        for fp, cid in fp_to_cluster.items():
+            if cid in source_set and fp in emb_lookup:
+                pool_embs.append(emb_lookup[fp])
+
+        if pool_embs:
+            centroid = np.mean(pool_embs, axis=0).astype(np.float32)
+            norm = np.linalg.norm(centroid)
+            if norm > 0:
+                centroid = centroid / norm
+            centroids[pool["id"]] = centroid
+
+    logger.info(
+        "Computed centroids for %d/%d pools from cluster data",
+        len(centroids), len([p for p in pools if not p.get("is_noise")]),
+    )
+    return centroids
 
 
 # ---------------------------------------------------------------------------
@@ -346,50 +430,92 @@ def classify(
     logger.info("Classifying %d images across %d pools", len(pending), len(classifiable_pools))
 
     # ------------------------------------------------------------------
-    # Tier 1: SigLIP zero-shot
+    # Tier 1: SigLIP embedding match
     # ------------------------------------------------------------------
-    from pool.phases.embeddings import encode_texts
+    #
+    # Strategy: when cluster data is available (full mode), classify by
+    # nearest pool centroid in embedding space.  This stays in the same
+    # vector space end-to-end and avoids the indirect text→embedding
+    # coupling. Falls back to text-based zero-shot for small mode where
+    # no clusters exist.
+    # ------------------------------------------------------------------
 
-    # Encode pool descriptions as text embeddings
-    pool_texts: list[str] = []
-    pool_ids_ordered: list[str] = []
-    for p in classifiable_pools:
-        text = p.get("siglip_description") or p["description"]
-        pool_texts.append(text)
-        pool_ids_ordered.append(p["id"])
-
-    text_embeddings = encode_texts(pool_texts)  # (num_pools, 512)
+    pool_ids_ordered: list[str] = [p["id"] for p in classifiable_pools]
 
     # Stack image embeddings into matrix
     filepaths = [fp for fp, _ in pending]
     image_matrix = np.stack([emb for _, emb in pending])  # (num_images, 512)
 
-    # Normalize (embeddings should already be normalized, but be safe)
+    # Normalize
     image_norms = np.linalg.norm(image_matrix, axis=1, keepdims=True)
     image_norms = np.where(image_norms == 0, 1.0, image_norms)
     image_matrix = image_matrix / image_norms
 
-    text_norms = np.linalg.norm(text_embeddings, axis=1, keepdims=True)
-    text_norms = np.where(text_norms == 0, 1.0, text_norms)
-    text_embeddings = text_embeddings / text_norms
+    # Try centroid-based classification first (full mode with cluster data)
+    pool_centroids = _compute_pool_centroids(conn, classifiable_pools, all_embeddings)
+    use_centroids = len(pool_centroids) >= len(classifiable_pools) * 0.5
+
+    if use_centroids:
+        logger.info("Using centroid-based classification (%d pool centroids)", len(pool_centroids))
+        # Build centroid matrix in same order as pool_ids_ordered
+        # Pools without centroids fall back to text embedding
+        from pool.phases.embeddings import encode_texts
+
+        target_vecs: list[np.ndarray] = []
+        for p in classifiable_pools:
+            pid = p["id"]
+            if pid in pool_centroids:
+                target_vecs.append(pool_centroids[pid])
+            else:
+                # Fallback: encode the text description for this pool
+                text = p.get("siglip_description") or p["description"]
+                vec = encode_texts([text])[0]
+                target_vecs.append(vec)
+
+        target_matrix = np.stack(target_vecs)
+    else:
+        logger.info("Using text-based zero-shot classification (no cluster data)")
+        from pool.phases.embeddings import encode_texts
+
+        pool_texts = [p.get("siglip_description") or p["description"] for p in classifiable_pools]
+        target_matrix = encode_texts(pool_texts)
+
+    # Normalize target vectors
+    target_norms = np.linalg.norm(target_matrix, axis=1, keepdims=True)
+    target_norms = np.where(target_norms == 0, 1.0, target_norms)
+    target_matrix = target_matrix / target_norms
 
     # Cosine similarity: (num_images, num_pools)
-    similarity = image_matrix @ text_embeddings.T
+    similarity = image_matrix @ target_matrix.T
 
-    # Classify based on confidence thresholds
-    tier2_candidates: list[tuple[str, float, str]] = []  # (filepath, siglip_conf, siglip_pool_id)
+    # Classify based on confidence thresholds + margin
+    tier2_candidates: list[tuple[str, float, str]] = []  # (filepath, conf, pool_id)
     tier1_classified = 0
 
     with _make_progress() as progress:
-        task = progress.add_task("Tier 1: SigLIP zero-shot", total=len(filepaths))
+        task = progress.add_task("Tier 1: SigLIP embedding match", total=len(filepaths))
 
         for i, filepath in enumerate(filepaths):
             scores = similarity[i]
-            best_idx = int(np.argmax(scores))
-            best_conf = float(scores[best_idx])
+            sorted_indices = np.argsort(scores)[::-1]
+            best_idx = int(sorted_indices[0])
+            best_score = float(scores[best_idx])
             best_pool = pool_ids_ordered[best_idx]
 
-            if best_conf > _HIGH_CONFIDENCE:
+            # Margin: gap between best and second-best pool score.
+            # A large margin means the classification is unambiguous.
+            if len(sorted_indices) > 1:
+                second_score = float(scores[sorted_indices[1]])
+                margin = best_score - second_score
+            else:
+                margin = best_score
+
+            # Effective confidence combines absolute score and margin.
+            # Centroid-based scores are typically higher (same space),
+            # so margin prevents false positives when pools are close.
+            best_conf = min(best_score * (0.5 + margin), 0.99) if use_centroids else best_score
+
+            if best_conf > _HIGH_CONFIDENCE and margin > 0.05:
                 # High confidence -- accept immediately
                 pool_info = pool_by_id[best_pool]
                 explanation = pool_info.get("siglip_description") or pool_info["description"]
